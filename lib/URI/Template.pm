@@ -22,6 +22,8 @@ URI::Template - Object for handling URI templates
     my $uri      = $template->process( x => 'y' );
     # uri is a URI object with value 'http://example.com/y'
 
+    my %vars = $template->extract($uri); # %vars => (x => 'y')
+
 =head1 DESCRIPTION
 
 This is an initial attempt to provide a wrapper around URI templates
@@ -349,6 +351,8 @@ sub process_to_string {
 
 Extracts variables from an uri based on the current template.
 Returns a hash with the extracted values.
+
+B<NOTE>: this method not supported C<-opt> and C<-neg> operators.
 
 =cut
 

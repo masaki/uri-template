@@ -6,7 +6,7 @@ use warnings;
 our $VERSION = '0.15';
 
 use URI;
-use URI::Escape qw(uri_escape_utf8);
+use URI::Escape qw(uri_escape_utf8 uri_unescape);
 use Unicode::Normalize;
 use overload '""' => \&template;
 
@@ -65,20 +65,25 @@ sub _study {
 sub _op_gen_join {
   my ($self, $exp) = @_;
 
-  return sub {
-    my ($var) = @_;
+  return +{
+    processor => sub {
+      my ($var) = @_;
 
-    my @pairs;
-    for my $keypair (@{ $exp->{vars} }) {
-      my $key = $keypair->[ 0 ];
-      my $val = $keypair->[ 1 ]->( $var );
-      next if !exists $var->{$key} && $val eq '';
-      Carp::croak "invalid variable ($key) supplied to join operator"
-        if ref $var->{$key};
+      my @pairs;
+      for my $keypair (@{ $exp->{vars} }) {
+        my $key = $keypair->[ 0 ];
+        my $val = $keypair->[ 1 ]->{processor}->( $var );
+        next if !exists $var->{$key} && $val eq '';
+        Carp::croak "invalid variable ($key) supplied to join operator"
+          if ref $var->{$key};
 
-      push @pairs, $key . '=' . $val;
-    }
-    return join $exp->{arg}, @pairs;
+        push @pairs, $key . '=' . $val;
+      }
+      return join $exp->{arg}, @pairs;
+    },
+    extractor => sub {
+    },
+    re => '',
   };
 }
 
@@ -90,12 +95,14 @@ sub _op_gen_opt {
     my $value   = $exp->{arg};
     my $varname = $exp->{vars}->[0]->[0];
 
-    return sub {
-      my ($var) = @_;
-      return '' unless exists $var->{$varname} and defined $var->{$varname};
-      return '' if ref $var->{$varname} and not @{ $var->{$varname} };
+    return +{
+      processor => sub {
+        my ($var) = @_;
+        return '' unless exists $var->{$varname} and defined $var->{$varname};
+        return '' if ref $var->{$varname} and not @{ $var->{$varname} };
 
-      return $value;
+        return $value;
+      },
     };
 }
 
@@ -107,12 +114,14 @@ sub _op_gen_neg {
     my $value   = $exp->{arg};
     my $varname = $exp->{vars}->[0]->[0];
 
-    return sub {
-      my ($var) = @_;
-      return $value unless exists $var->{$varname} && defined $var->{$varname};
-      return $value if ref $var->{$varname} && !  @{ $var->{$varname} };
+    return +{
+      processor => sub {
+        my ($var) = @_;
+        return $value unless exists $var->{$varname} && defined $var->{$varname};
+        return $value if ref $var->{$varname} && !  @{ $var->{$varname} };
 
-      return '';
+        return '';
+      },
     };
 }
 
@@ -124,13 +133,23 @@ sub _op_gen_prefix {
     my $prefix = $exp->{arg};
     my $name   = $exp->{vars}->[0]->[0];
 
-    return sub {
-      my ($var) = @_;
-      return '' unless exists $var->{$name} && defined $var->{$name};
-      my $array = ref $var->{$name} ? $var->{$name} : [ $var->{$name} ];
-      return '' unless @$array;
+    return +{
+      processor => sub {
+        my ($var) = @_;
+        return '' unless exists $var->{$name} && defined $var->{$name};
+        my $array = ref $var->{$name} ? $var->{$name} : [ $var->{$name} ];
+        return '' unless @$array;
 
-      return join '', map { "$prefix$_" } @$array;
+        return join '', map { "$prefix$_" } @$array;
+      },
+      extractor => sub {
+        my ($var) = @_;
+
+        $var =~ s/^${prefix}//;
+        my @vars = map { uri_unescape($_) } split /$prefix/, $var;
+        return ($name, @vars > 1 ? \@vars : @vars ? $vars[0] : undef);
+      },
+      re => '(?:'.quotemeta($prefix).'(?:[a-zA-Z0-9\-._~]|(?:%[a-fA-F0-9]{2}))*)*',
     };
 }
 
@@ -142,13 +161,23 @@ sub _op_gen_suffix {
     my $suffix = $exp->{arg};
     my $name   = $exp->{vars}->[0]->[0];
 
-    return sub {
-      my ($var) = @_;
-      return '' unless exists $var->{$name} && defined $var->{$name};
-      my $array = ref $var->{$name} ? $var->{$name} : [ $var->{$name} ];
-      return '' unless @$array;
+    return +{
+      processor => sub {
+        my ($var) = @_;
+        return '' unless exists $var->{$name} && defined $var->{$name};
+        my $array = ref $var->{$name} ? $var->{$name} : [ $var->{$name} ];
+        return '' unless @$array;
 
-      return join '', map { "$_$suffix" } @$array;
+        return join '', map { "$_$suffix" } @$array;
+      },
+      extractor => sub {
+        my ($var) = @_;
+
+        $var =~ s/${suffix}$//;
+        my @vars = map { uri_unescape($_) } split /$suffix/, $var;
+        return ($name, @vars > 1 ? \@vars : @vars ? $vars[0] : undef);
+      },
+      re => '(?:(?:[a-zA-Z0-9\-._~]|(?:%[a-fA-F0-9]{2}))*'.quotemeta($suffix).')*',
     };
 }
 
@@ -160,15 +189,25 @@ sub _op_gen_list {
     my $joiner = $exp->{arg};
     my $name   = $exp->{vars}->[0]->[0];
 
-    return sub {
-      my ($var) = @_;
-      return '' unless exists $var->{$name} && defined $var->{$name};
-      Carp::croak "variable ($name) used in -list must be an array reference"
-        unless ref $var->{$name};
+    return +{
+      processor => sub {
+        my ($var) = @_;
+        return '' unless exists $var->{$name} && defined $var->{$name};
+        Carp::croak "variable ($name) used in -list must be an array reference"
+          unless ref $var->{$name};
 
-      return '' unless my @array = @{ $var->{$name} };
+        return '' unless my @array = @{ $var->{$name} };
 
-      return join $joiner, @array;
+        return join $joiner, @array;
+      },
+      extractor => sub {
+        my @vars = map { uri_unescape($_) } split /$joiner/, $_[0];
+        return ($name, @vars > 0 ? \@vars : undef);
+      },
+      re => do {
+        my $var = '(?:[a-zA-Z0-9\-._~]|(?:%[a-fA-F0-9]{2}))';
+        '(?:'.$var.'*(?:'.quotemeta($joiner).$var.'*)*)*';
+      },
     };
 }
 
@@ -178,8 +217,14 @@ sub _op_fill_var {
     my( $var, $default ) = split( /=/, $exp, 2 );
     $default = '' if !defined $default;
 
-    return $var, sub {
-        return exists $_[0]->{$var} ? $_[0]->{$var} : $default;
+    return $var, +{
+        processor => sub {
+            return exists $_[0]->{$var} ? $_[0]->{$var} : $default;
+        },
+        extractor => sub {
+            return ($var, $_[0] eq '' ? undef : uri_unescape($_[0]));
+        },
+        re => '(?:[a-zA-Z0-9\-._~]|(?:%[a-fA-F0-9]{2}))*',
     };
 }
 
@@ -271,10 +316,41 @@ sub process_to_string {
     for my $hunk (@{ $self->{studied} }) {
         if (! ref $hunk) { $str .= $hunk; next; }
 
-        $str .= $hunk->(\%data);
+        $str .= $hunk->{processor}->(\%data);
     }
 
     return $str;
+}
+
+=head2 extract( $uri )
+
+Extracts variables from an uri based on the current template.
+Returns a hash with the extracted values.
+
+=cut
+
+sub extract {
+    my ($self, $uri) = @_;
+
+    unless ($self->{_extract_re}) {
+        my $re = '';
+        for my $hunk (@{ $self->{studied} }) {
+            if (! ref $hunk) { $re .= quotemeta $hunk; next; }
+
+            $re .= "($hunk->{re})";
+        }
+        $self->{_extract_re} = qr/^${re}$/;
+    }
+
+    my @matches = $uri =~ $self->{_extract_re};
+
+    my @vars;
+    for my $hunk ($self->expansions) {
+        push @vars, $hunk->{extractor}->(shift @matches);
+    }
+
+    my %vars = @vars;
+    return %vars;
 }
 
 =head1 AUTHOR

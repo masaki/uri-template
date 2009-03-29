@@ -14,5 +14,6 @@ requires 'URI::Escape';
 requires 'Unicode::Normalize';
 
 test_requires 'Test::More';
+use_test_base;
 
 WriteAll;

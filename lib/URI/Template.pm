@@ -65,12 +65,15 @@ sub _study {
 sub _op_gen_join {
   my ($self, $exp) = @_;
 
+  my $joiner = $exp->{arg};
+  my @vars   = @{ $exp->{vars} };
+
   return +{
     processor => sub {
       my ($var) = @_;
 
       my @pairs;
-      for my $keypair (@{ $exp->{vars} }) {
+      for my $keypair (@vars) {
         my $key = $keypair->[ 0 ];
         my $val = $keypair->[ 1 ]->{processor}->( $var );
         next if !exists $var->{$key} && $val eq '';
@@ -79,11 +82,30 @@ sub _op_gen_join {
 
         push @pairs, $key . '=' . $val;
       }
-      return join $exp->{arg}, @pairs;
+      return join $joiner, @pairs;
     },
     extractor => sub {
+      my %vars = map { $_->[0] => undef } @vars;
+      for my $pair (split /$joiner/, $_[0]) {
+        my ($name, $value) = split /=/, $pair;
+        $vars{$name} = uri_unescape($value);
+      }
+      return %vars;
     },
-    re => '',
+    re => do {
+      my $var = '(?:[a-zA-Z0-9\-._~]|(?:%[a-fA-F0-9]{2}))*';
+      my $arg = quotemeta $joiner;
+      my @re;
+      for my $pair (@vars) {
+        my $re = $pair->[0].'='.$var;
+        for my $rest (@vars) {
+          next if $pair eq $rest;
+          $re .= '(?:'.$arg.$rest->[0].'='.$var.')?';
+        }
+        push @re, $re;
+      }
+      '(?:' . join('|', @re) . ')*';
+    },
   };
 }
 

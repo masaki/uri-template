@@ -9,6 +9,7 @@ use URI;
 use URI::Escape qw(uri_escape_utf8 uri_unescape);
 use Unicode::Normalize;
 use overload '""' => \&template;
+use Carp ();
 
 =head1 NAME
 
@@ -359,6 +360,10 @@ sub extract {
         for my $hunk (@{ $self->{studied} }) {
             if (! ref $hunk) { $re .= quotemeta $hunk; next; }
 
+            unless (exists $hunk->{re}) {
+                Carp::carp "extract() is not supported -opt and -neg ops";
+                return;
+            }
             $re .= "($hunk->{re})";
         }
         $self->{_extract_re} = qr/^${re}$/;
